@@ -1,0 +1,27 @@
+# Ignore virtual environments
+env/
+.venv/
+
+# Python cache and logs
+__pycache__/
+*.py[cod]
+*.log
+
+# VS Code settings (optional)
+.vscode/
+
+# macOS junk
+.DS_Store
+
+# Streamlit config cache
+.streamlit/
+
+# Jupyter/IPython
+.ipynb_checkpoints/
+
+env/
+.venv/
+__pycache__/
+*.py[cod]
+.vscode/
+.DS_Store
