@@ -1,47 +1,47 @@
 
 
-# 🦷 Dental X-Ray Assistant
+# Dental X-Ray Assistant
 
 A comprehensive Python-based system for viewing, enhancing, and analyzing dental X-ray images using computer vision and machine learning techniques.
 
-## 🎯 Project Overview
+## Project Overview
 
 This project provides tools for:
 - **Image Processing**: Advanced X-ray image enhancement using CLAHE, edge detection, and morphological operations
-- **Machine Learning**: CNN-based classification of dental conditions (cavity, crown, filling, normal)
+- **Machine Learning**: CNN-based classification of dental conditions (cavity, filling, implant, impacted)
 - **Web Interface**: Streamlit-based web application for easy image upload and analysis
 - **Data Visualization**: Comprehensive plotting and analysis tools
 
-## ✨ Features
+## Features
 
-### 🔬 Image Processing
+### Image Processing
 - **CLAHE Enhancement**: Contrast Limited Adaptive Histogram Equalization for better detail visibility
 - **Edge Detection**: Canny edge detection for feature extraction
 - **Noise Reduction**: Multiple denoising methods (Gaussian, Bilateral, Median)
 - **Morphological Operations**: Opening, closing, dilation, and erosion
 - **Contour Detection**: Automatic detection and visualization of dental features
 
-### 🤖 Machine Learning
+### Machine Learning
 - **CNN Architecture**: Deep convolutional neural network with batch normalization and dropout
 - **Data Augmentation**: Rotation, scaling, flipping for improved model generalization
-- **Multi-class Classification**: Detects cavities, crowns, fillings, and normal teeth
+- **Multi-class Classification**: Detects cavities, fillings, implants, and impacted teeth
 - **Model Evaluation**: Comprehensive metrics including confusion matrix and per-class accuracy
 
-### 🌐 Web Interface
+### Web Interface
 - **Interactive Upload**: Drag-and-drop image upload
 - **Real-time Processing**: Instant image enhancement and analysis
 - **ML Predictions**: AI-powered condition detection with confidence scores
 - **Visualization**: Histograms, processing pipelines, and statistical analysis
 
-## 📁 Project Structure
+## Project Structure
 
 ```
 xrayassistant/
 ├── data/                    # Dataset directory
 │   ├── cavity/             # Cavity X-ray images
-│   ├── crown/              # Crown X-ray images
 │   ├── filling/            # Filling X-ray images
-│   └── normal/             # Normal X-ray images
+│   ├── implant/            # Implant X-ray images
+│   └── impacted/           # Impacted tooth X-ray images
 ├── models/                 # Trained models and metadata
 ├── utils/                  # Utility functions
 │   ├── __init__.py
@@ -49,11 +49,12 @@ xrayassistant/
 ├── xray_viewer.py          # Interactive image viewer
 ├── xray_app.py             # Streamlit web application
 ├── train_model.py          # ML model training script
+├── organize_dataset.py     # Dataset organization script
 ├── requirements.txt        # Python dependencies
 └── README.md              # This file
 ```
 
-## 🚀 Quick Start
+## Quick Start
 
 ### 1. Installation
 
@@ -63,8 +64,8 @@ git clone <repository-url>
 cd xrayassistant
 
 # Create virtual environment
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+python -m venv env
+source env/bin/activate  # On Windows: env\Scripts\activate
 
 # Install dependencies
 pip install -r requirements.txt
@@ -72,17 +73,23 @@ pip install -r requirements.txt
 
 ### 2. Data Preparation
 
-Organize your X-ray images in the following structure:
+If you have a Roboflow dataset with train/valid/test splits and _annotations.csv files:
+
+```bash
+python organize_dataset.py
+```
+
+This will organize your images into the following structure:
 ```
 data/
 ├── cavity/
 │   ├── image1.jpg
 │   └── image2.png
-├── crown/
-│   └── ...
 ├── filling/
 │   └── ...
-└── normal/
+├── implant/
+│   └── ...
+└── impacted/
     └── ...
 ```
 
@@ -96,7 +103,7 @@ This will:
 - Load and preprocess all images
 - Train a CNN model with data augmentation
 - Generate training plots and evaluation metrics
-- Save the trained model to `models/dental_model.h5`
+- Save the trained model to `models/best_model.h5`
 
 ### 4. Running the Web Application
 
@@ -114,7 +121,7 @@ python xray_viewer.py
 
 This will open an interactive viewer for browsing and processing X-ray images.
 
-## 🔧 Usage Examples
+## Usage Examples
 
 ### Basic Image Processing
 
@@ -143,7 +150,7 @@ stats = DatasetUtils.get_dataset_stats("data")
 print(f"Dataset contains {sum(stats.values())} images")
 
 # Validate dataset structure
-issues = DatasetUtils.validate_dataset("data", ["cavity", "crown", "filling", "normal"])
+issues = DatasetUtils.validate_dataset("data", ["cavity", "filling", "implant", "impacted"])
 if issues:
     print("Dataset issues found:", issues)
 ```
@@ -156,7 +163,7 @@ import cv2
 import numpy as np
 
 # Load trained model
-model = tf.keras.models.load_model("models/dental_model.h5")
+model = tf.keras.models.load_model("models/best_model.h5")
 
 # Preprocess image
 img = cv2.imread("test_image.jpg", cv2.IMREAD_GRAYSCALE)
@@ -166,24 +173,24 @@ img = np.expand_dims(img, axis=[0, -1])
 
 # Make prediction
 prediction = model.predict(img)
-class_names = ["cavity", "crown", "filling", "normal"]
+class_names = ["cavity", "filling", "implant", "impacted"]
 predicted_class = class_names[np.argmax(prediction)]
 confidence = np.max(prediction) * 100
 
 print(f"Predicted: {predicted_class} ({confidence:.1f}% confidence)")
 ```
 
-## 📊 Model Performance
+## Model Performance
 
-The CNN model typically achieves:
-- **Overall Accuracy**: 85-95% (depending on dataset quality)
+The CNN model achieves:
+- **Overall Accuracy**: 62.6% (on current dataset)
 - **Per-class Performance**: 
-  - Normal: 90-95%
-  - Cavity: 85-90%
-  - Crown: 80-85%
-  - Filling: 75-80%
+  - Cavity: Varies by class
+  - Filling: Varies by class
+  - Implant: Varies by class
+  - Impacted: Varies by class
 
-## 🛠️ Configuration
+## Configuration
 
 ### Model Parameters
 - **Image Size**: 256x256 pixels
@@ -197,7 +204,7 @@ The CNN model typically achieves:
 - **Edge Detection Thresholds**: 50, 150
 - **Gaussian Blur Kernel**: 5x5
 
-## 🔍 Advanced Features
+## Advanced Features
 
 ### Custom Processing Pipeline
 
@@ -231,7 +238,7 @@ for img_path in input_dir.glob("*.jpg"):
         cv2.imwrite(str(output_path), enhanced)
 ```
 
-## 🤝 Contributing
+## Contributing
 
 1. Fork the repository
 2. Create a feature branch (`git checkout -b feature/amazing-feature`)
@@ -239,18 +246,19 @@ for img_path in input_dir.glob("*.jpg"):
 4. Push to the branch (`git push origin feature/amazing-feature`)
 5. Open a Pull Request
 
-## 📝 License
+## License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
 
-## 🙏 Acknowledgments
+## Acknowledgments
 
 - OpenCV for image processing capabilities
 - TensorFlow/Keras for deep learning framework
 - Streamlit for web application framework
+- Roboflow for dataset format and organization
 - The dental imaging community for inspiration
 
-## 📞 Support
+## Support
 
 For questions, issues, or contributions, please:
 1. Check the existing issues
@@ -259,4 +267,5 @@ For questions, issues, or contributions, please:
 
 ---
 
+**Note**: This tool is for educational and research purposes. Always consult with qualified dental professionals for actual medical diagnosis.
 **Note**: This tool is for educational and research purposes. Always consult with qualified dental professionals for actual medical diagnosis.
