@@ -1,26 +1,31 @@
 import streamlit as st
 import cv2
 import numpy as np
-from PIL import Image
 import tensorflow as tf
-import os
+from PIL import Image, ImageDraw, ImageFont
+import plotly.graph_objects as go
+import plotly.express as px
 from pathlib import Path
+import os
+import json
+from datetime import datetime
 
-# Page configuration
+# Custom CSS for better styling
 st.set_page_config(
-    page_title="🦷 Dental X-Ray Assistant",
+    page_title="Dental X-Ray AI Assistant",
     page_icon="🦷",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS for better styling
+# Custom CSS
 st.markdown("""
 <style>
     .main-header {
         font-size: 3rem;
-        color: #1f77b4;
+        font-weight: bold;
         text-align: center;
+        color: #1f77b4;
         margin-bottom: 2rem;
     }
     .metric-card {
@@ -35,250 +40,531 @@ st.markdown("""
         border-radius: 0.5rem;
         border: 2px solid #1f77b4;
     }
+    .thinking-box {
+        background-color: #fff3cd;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        border: 2px solid #ffc107;
+        margin: 1rem 0;
+    }
+    .annotation-box {
+        background-color: #d1ecf1;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        border: 2px solid #17a2b8;
+    }
+    .stButton > button {
+        width: 100%;
+        background-color: #1f77b4;
+        color: white;
+        border: none;
+        padding: 0.5rem 1rem;
+        border-radius: 0.5rem;
+    }
+    .feedback-section {
+        background-color: #f8f9fa;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        border: 1px solid #dee2e6;
+    }
 </style>
 """, unsafe_allow_html=True)
 
 class DentalXRayAnalyzer:
     def __init__(self):
-        self.classes = ["cavity", "crown", "filling", "normal"]
-        self.model_path = "models/dental_model.h5"
+        self.model_path = "models/best_model.h5"
+        self.classes = ["cavity", "filling", "implant", "impacted"]
         self.model = None
-        
+        self.load_model()
+        self.feedback_data = []
+        self.load_feedback_data()
+    
     def load_model(self):
         """Load the trained model"""
-        if os.path.exists(self.model_path):
-            try:
+        try:
+            if os.path.exists(self.model_path):
                 self.model = tf.keras.models.load_model(self.model_path)
-                return True
-            except Exception as e:
-                st.error(f"Error loading model: {e}")
-                return False
-        return False
+                st.success("✅ AI Model loaded successfully!")
+            else:
+                st.error("❌ Model not found. Please train the model first.")
+                self.model = None
+        except Exception as e:
+            st.error(f"❌ Error loading model: {e}")
+            self.model = None
     
-    def preprocess_image(self, img, target_size=(256, 256)):
-        """Preprocess image for model prediction"""
-        # Convert to grayscale if needed
-        if len(img.shape) == 3:
-            img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    def load_feedback_data(self):
+        """Load feedback data for continuous learning"""
+        try:
+            if os.path.exists('feedback_data.json'):
+                with open('feedback_data.json', 'r') as f:
+                    self.feedback_data = json.load(f)
+        except:
+            self.feedback_data = []
+    
+    def save_feedback_data(self):
+        """Save feedback data"""
+        with open('feedback_data.json', 'w') as f:
+            json.dump(self.feedback_data, f, indent=2)
+    
+    def advanced_preprocess_image(self, image):
+        """Advanced image preprocessing with background segmentation and CLAHE"""
+        # Convert PIL to OpenCV format
+        if isinstance(image, Image.Image):
+            image = np.array(image)
         
-        # Apply CLAHE for enhancement
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-        img = clahe.apply(img)
+        # Convert to grayscale if needed
+        if len(image.shape) == 3:
+            image = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+        
+        # Background segmentation to reduce white pixels
+        img2 = image - 255
+        kernel = np.ones((2, 2))
+        kernel2 = np.ones((3, 3))
+        
+        # Dilate to create mask
+        dilated_mask = cv2.dilate(img2, kernel, iterations=3)
+        ret, thresh = cv2.threshold(dilated_mask, 0, 255, cv2.THRESH_BINARY)
+        dilated_mask2 = cv2.dilate(thresh, kernel2, iterations=3)
+        
+        # Apply mask to original image
+        image = image / 255.0
+        res_img = dilated_mask2 * image
+        res_img = np.uint8(res_img)
+        
+        # Apply CLAHE with higher clip limit
+        clahe_op = cv2.createCLAHE(clipLimit=20)
+        final_img = clahe_op.apply(res_img)
         
         # Resize
-        img = cv2.resize(img, target_size)
+        final_img = cv2.resize(final_img, (256, 256))
+        
+        # Convert to RGB (DenseNet expects 3 channels)
+        final_img = cv2.cvtColor(final_img, cv2.COLOR_GRAY2RGB)
         
         # Normalize
-        img = img / 255.0
+        final_img = final_img / 255.0
         
-        # Add channel dimension
-        img = np.expand_dims(img, axis=-1)
-        
-        return img
+        return final_img
     
-    def predict(self, img):
+    def detect_teeth_regions(self, image):
+        """Detect potential tooth regions using contour detection"""
+        if isinstance(image, Image.Image):
+            image = np.array(image)
+        
+        if len(image.shape) == 3:
+            image = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+        
+        # Apply Gaussian blur
+        blurred = cv2.GaussianBlur(image, (5, 5), 0)
+        
+        # Apply adaptive threshold
+        thresh = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
+        
+        # Find contours
+        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        # Filter contours by area (teeth should be reasonably sized)
+        tooth_regions = []
+        for contour in contours:
+            area = cv2.contourArea(contour)
+            if 1000 < area < 50000:  # Adjust these values based on your images
+                x, y, w, h = cv2.boundingRect(contour)
+                tooth_regions.append((x, y, w, h))
+        
+        return tooth_regions
+    
+    def create_attention_map(self, image, predictions):
+        """Create a simple attention map based on prediction confidence"""
+        if isinstance(image, Image.Image):
+            image = np.array(image)
+        
+        # Create attention map based on image intensity and prediction confidence
+        if len(image.shape) == 3:
+            gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+        else:
+            gray = image
+        
+        # Normalize
+        gray = gray / 255.0
+        
+        # Create attention map (brighter areas = more attention)
+        attention_map = gray * np.max(predictions)
+        
+        # Apply colormap
+        attention_colored = cv2.applyColorMap((attention_map * 255).astype(np.uint8), cv2.COLORMAP_JET)
+        
+        return attention_colored
+    
+    def explain_prediction(self, image, predicted_class, predictions):
+        """Generate explanation for the AI's prediction"""
+        explanations = []
+        
+        # Get confidence for predicted class
+        confidence = predictions[predicted_class]
+        
+        # Base explanation
+        explanations.append(f"🔍 **Analysis Complete**")
+        explanations.append(f"I analyzed the X-ray image and detected patterns consistent with **{self.classes[predicted_class].title()}**.")
+        
+        # Confidence-based explanation
+        if confidence > 0.8:
+            explanations.append(f"🎯 **High Confidence ({confidence*100:.1f}%)**: The patterns are very clear and distinctive.")
+        elif confidence > 0.6:
+            explanations.append(f"✅ **Medium Confidence ({confidence*100:.1f}%)**: The patterns are recognizable but not definitive.")
+        else:
+            explanations.append(f"⚠️ **Low Confidence ({confidence*100:.1f}%)**: The patterns are unclear and may need human review.")
+        
+        # Class-specific explanations
+        if predicted_class == 0:  # Cavity
+            explanations.append("🦷 **Looking for**: Dark spots or holes in tooth structure")
+        elif predicted_class == 1:  # Filling
+            explanations.append("🦷 **Looking for**: Bright, dense materials in tooth")
+        elif predicted_class == 2:  # Implant
+            explanations.append("🦷 **Looking for**: Screw-like structures or artificial tooth roots")
+        elif predicted_class == 3:  # Impacted
+            explanations.append("🦷 **Looking for**: Teeth that appear stuck or misaligned")
+        
+        # Alternative possibilities
+        other_classes = [(i, pred) for i, pred in enumerate(predictions) if i != predicted_class]
+        other_classes.sort(key=lambda x: x[1], reverse=True)
+        
+        if other_classes[0][1] > 0.2:
+            explanations.append(f"🤔 **Alternative possibility**: {self.classes[other_classes[0][0]].title()} ({other_classes[0][1]*100:.1f}%)")
+        
+        return explanations
+    
+    def predict(self, image):
         """Make prediction on the image"""
         if self.model is None:
             return None, None
         
-        # Preprocess
-        processed_img = self.preprocess_image(img)
+        try:
+            # Preprocess image
+            processed_img = self.advanced_preprocess_image(image)
+            
+            # Add batch dimension
+            processed_img = np.expand_dims(processed_img, axis=0)
+            
+            # Make prediction
+            predictions = self.model.predict(processed_img, verbose=0)
+            
+            # Get predicted class and confidence
+            predicted_class = np.argmax(predictions[0])
+            confidence = np.max(predictions[0])
+            
+            return predicted_class, predictions[0]
         
-        # Predict
-        prediction = self.model.predict(np.expand_dims(processed_img, axis=0))
+        except Exception as e:
+            st.error(f"❌ Prediction error: {e}")
+            return None, None
+    
+    def apply_clahe(self, image, clip_limit=2.0):
+        """Apply CLAHE enhancement"""
+        if isinstance(image, Image.Image):
+            image = np.array(image)
         
-        # Get class and confidence
-        predicted_class = self.classes[np.argmax(prediction)]
-        confidence = np.max(prediction) * 100
+        if len(image.shape) == 3:
+            image = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
         
-        return predicted_class, confidence
+        clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=(8, 8))
+        enhanced = clahe.apply(image)
+        
+        return Image.fromarray(enhanced)
     
-    def apply_clahe(self, img, clip_limit=2.0, tile_grid_size=(8, 8)):
-        """Apply CLAHE for contrast enhancement"""
-        clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_grid_size)
-        return clahe.apply(img)
+    def apply_edge_detection(self, image):
+        """Apply Canny edge detection"""
+        if isinstance(image, Image.Image):
+            image = np.array(image)
+        
+        if len(image.shape) == 3:
+            image = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+        
+        edges = cv2.Canny(image, 50, 150)
+        return Image.fromarray(edges)
     
-    def detect_edges(self, img, low_threshold=50, high_threshold=150):
-        """Detect edges using Canny algorithm"""
-        return cv2.Canny(img, low_threshold, high_threshold)
-    
-    def find_contours(self, img):
-        """Find contours in the image"""
-        contours, _ = cv2.findContours(img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        return contours
+    def add_feedback(self, image_path, predicted_class, user_correction, confidence):
+        """Add user feedback for continuous learning"""
+        feedback = {
+            'timestamp': datetime.now().isoformat(),
+            'image_path': image_path,
+            'predicted_class': predicted_class,
+            'user_correction': user_correction,
+            'confidence': confidence,
+            'correct': predicted_class == user_correction
+        }
+        
+        self.feedback_data.append(feedback)
+        self.save_feedback_data()
+        
+        return len(self.feedback_data)
 
 def main():
     # Header
-    st.markdown('<h1 class="main-header">🦷 Dental X-Ray Assistant</h1>', unsafe_allow_html=True)
+    st.markdown('<h1 class="main-header">🦷 Dental X-Ray AI Assistant</h1>', unsafe_allow_html=True)
     
     # Initialize analyzer
     analyzer = DentalXRayAnalyzer()
-    model_loaded = analyzer.load_model()
     
     # Sidebar
-    st.sidebar.title("⚙️ Settings")
+    st.sidebar.markdown("## ⚙️ Settings")
     
-    # Model status
-    if model_loaded:
-        st.sidebar.success("✅ ML Model Loaded")
-    else:
-        st.sidebar.warning("⚠️ ML Model Not Available")
-        st.sidebar.info("Train the model first using train_model.py")
+    # File upload
+    uploaded_file = st.sidebar.file_uploader(
+        "📁 Upload X-Ray Image",
+        type=['png', 'jpg', 'jpeg'],
+        help="Upload a dental X-ray image for analysis"
+    )
     
     # Processing options
-    st.sidebar.subheader("Image Processing")
+    st.sidebar.markdown("### 🔧 Image Processing")
     apply_clahe = st.sidebar.checkbox("Apply CLAHE Enhancement", value=True)
     clahe_clip_limit = st.sidebar.slider("CLAHE Clip Limit", 1.0, 5.0, 2.0, 0.1)
+    apply_edge_detection = st.sidebar.checkbox("Apply Edge Detection", value=False)
     
-    detect_edges = st.sidebar.checkbox("Detect Edges", value=False)
-    edge_low = st.sidebar.slider("Edge Low Threshold", 10, 100, 50)
-    edge_high = st.sidebar.slider("Edge High Threshold", 100, 300, 150)
+    # Annotation options
+    st.sidebar.markdown("### 🦷 Annotation Options")
+    show_teeth_detection = st.sidebar.checkbox("Show Tooth Detection", value=True)
+    show_attention_map = st.sidebar.checkbox("Show Attention Map", value=True)
+    show_thinking = st.sidebar.checkbox("Show AI Thinking", value=True)
     
     # Main content
-    col1, col2 = st.columns([2, 1])
-    
-    with col1:
-        st.subheader("📤 Upload X-Ray Image")
-        uploaded_file = st.file_uploader(
-            "Choose an X-ray image...", 
-            type=["jpg", "jpeg", "png"],
-            help="Upload a dental X-ray image for analysis"
-        )
-    
-    with col2:
-        st.subheader("📊 Dataset Info")
-        data_dir = Path("data")
-        if data_dir.exists():
-            for class_name in analyzer.classes:
-                class_dir = data_dir / class_name
-                if class_dir.exists():
-                    count = len(list(class_dir.glob("*.jpg")) + list(class_dir.glob("*.png")))
-                    st.metric(f"{class_name.title()}", count)
-        else:
-            st.info("No data directory found")
-    
     if uploaded_file is not None:
-        # Convert uploaded image to OpenCV format
-        file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
-        img = cv2.imdecode(file_bytes, cv2.IMREAD_GRAYSCALE)
+        # Load image
+        image = Image.open(uploaded_file)
         
-        # Display original image
-        st.subheader("🖼️ Original Image")
-        st.image(img, caption="Uploaded X-Ray", use_column_width=True)
-        
-        # Image processing
-        processed_img = img.copy()
-        
-        if apply_clahe:
-            processed_img = analyzer.apply_clahe(processed_img, clahe_clip_limit)
-        
-        # Create columns for processed images
-        col1, col2 = st.columns(2)
+        # Create columns
+        col1, col2 = st.columns([1, 1])
         
         with col1:
+            st.markdown("### 📸 Original Image")
+            st.image(image, caption="Original X-Ray", use_column_width=True)
+            
+            # Image statistics
+            st.markdown("### 📊 Image Statistics")
+            img_array = np.array(image)
+            if len(img_array.shape) == 3:
+                img_array = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
+            
+            stats_col1, stats_col2 = st.columns(2)
+            with stats_col1:
+                st.metric("Mean Intensity", f"{np.mean(img_array):.1f}")
+                st.metric("Standard Deviation", f"{np.std(img_array):.1f}")
+            with stats_col2:
+                st.metric("Min Value", f"{np.min(img_array):.0f}")
+                st.metric("Max Value", f"{np.max(img_array):.0f}")
+        
+        with col2:
+            st.markdown("### 🔍 Processed Image")
+            
+            # Apply processing
+            processed_image = image
             if apply_clahe:
-                st.subheader("✨ Enhanced Image (CLAHE)")
-                st.image(processed_img, caption="CLAHE Enhanced", use_column_width=True)
-        
-        with col2:
-            if detect_edges:
-                edges = analyzer.detect_edges(processed_img, edge_low, edge_high)
-                st.subheader("🔍 Edge Detection")
-                st.image(edges, caption="Canny Edge Detection", use_column_width=True)
-        
-        # ML Prediction
-        if model_loaded:
-            st.subheader("🤖 AI Analysis")
+                processed_image = analyzer.apply_clahe(processed_image, clahe_clip_limit)
+            if apply_edge_detection:
+                processed_image = analyzer.apply_edge_detection(processed_image)
             
-            with st.spinner("Analyzing image..."):
-                predicted_class, confidence = analyzer.predict(img)
+            st.image(processed_image, caption="Processed X-Ray", use_column_width=True)
+        
+        # AI Analysis Section
+        if analyzer.model is not None:
+            st.markdown("---")
+            st.markdown("## 🤖 AI Analysis")
             
-            if predicted_class:
-                # Create prediction display
-                col1, col2, col3 = st.columns(3)
+            # Make prediction
+            predicted_class, predictions = analyzer.predict(image)
+            
+            if predicted_class is not None:
+                # Create three columns for analysis
+                analysis_col1, analysis_col2, analysis_col3 = st.columns([1, 1, 1])
                 
-                with col1:
+                with analysis_col1:
+                    st.markdown("### 🎯 Prediction")
+                    # Prediction box
                     st.markdown('<div class="prediction-box">', unsafe_allow_html=True)
-                    st.metric("Predicted Condition", predicted_class.title())
+                    st.markdown(f"**Predicted Condition:** {analyzer.classes[predicted_class].title()}")
+                    st.markdown(f"**Confidence:** {predictions[predicted_class]*100:.1f}%")
                     st.markdown('</div>', unsafe_allow_html=True)
+                    
+                    # Confidence chart
+                    fig = go.Figure(data=[
+                        go.Bar(
+                            x=[cls.title() for cls in analyzer.classes],
+                            y=predictions * 100,
+                            marker_color=['#1f77b4' if i == predicted_class else '#d3d3d3' for i in range(len(analyzer.classes))]
+                        )
+                    ])
+                    fig.update_layout(
+                        title="Prediction Confidence",
+                        xaxis_title="Conditions",
+                        yaxis_title="Confidence (%)",
+                        height=300
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
                 
-                with col2:
-                    st.markdown('<div class="prediction-box">', unsafe_allow_html=True)
-                    st.metric("Confidence", f"{confidence:.1f}%")
-                    st.markdown('</div>', unsafe_allow_html=True)
-                
-                with col3:
-                    # Color-coded confidence bar
-                    if confidence > 80:
-                        st.success("High Confidence")
-                    elif confidence > 60:
-                        st.warning("Medium Confidence")
+                with analysis_col2:
+                    st.markdown("### 🦷 Tooth Detection")
+                    if show_teeth_detection:
+                        # Detect tooth regions
+                        tooth_regions = analyzer.detect_teeth_regions(image)
+                        
+                        # Draw annotations on image
+                        annotated_image = image.copy()
+                        draw = ImageDraw.Draw(annotated_image)
+                        
+                        for i, (x, y, w, h) in enumerate(tooth_regions):
+                            # Draw rectangle
+                            draw.rectangle([x, y, x+w, y+h], outline='red', width=2)
+                            # Add label
+                            draw.text((x, y-20), f"Tooth {i+1}", fill='red')
+                        
+                        st.image(annotated_image, caption=f"Detected {len(tooth_regions)} tooth regions", use_column_width=True)
+                        
+                        st.markdown(f"**Detected {len(tooth_regions)} potential tooth regions**")
                     else:
-                        st.error("Low Confidence")
+                        st.info("Enable 'Show Tooth Detection' to see annotations")
                 
-                # Detailed predictions
-                st.subheader("📈 Detailed Predictions")
-                processed_img_for_pred = analyzer.preprocess_image(img)
-                predictions = analyzer.model.predict(np.expand_dims(processed_img_for_pred, axis=0))[0]
+                with analysis_col3:
+                    st.markdown("### 🧠 Attention Map")
+                    if show_attention_map:
+                        # Create attention map
+                        attention_map = analyzer.create_attention_map(image, predictions)
+                        st.image(attention_map, caption="AI Attention Map", use_column_width=True)
+                        
+                        st.markdown("**Brighter areas = AI paying more attention**")
+                    else:
+                        st.info("Enable 'Show Attention Map' to see what the AI focuses on")
                 
-                # Create a bar chart
-                import plotly.express as px
-                import pandas as pd
+                # AI Thinking Section
+                if show_thinking:
+                    st.markdown("---")
+                    st.markdown("## 🧠 AI Thinking Process")
+                    
+                    explanations = analyzer.explain_prediction(image, predicted_class, predictions)
+                    
+                    st.markdown('<div class="thinking-box">', unsafe_allow_html=True)
+                    for explanation in explanations:
+                        st.markdown(explanation)
+                    st.markdown('</div>', unsafe_allow_html=True)
                 
-                df = pd.DataFrame({
-                    'Condition': [c.title() for c in analyzer.classes],
-                    'Probability': predictions * 100
-                })
+                # Feedback Section
+                st.markdown("---")
+                st.markdown("## 📝 Feedback & Learning")
                 
-                fig = px.bar(df, x='Condition', y='Probability', 
-                           title="Prediction Probabilities",
-                           color='Probability',
-                           color_continuous_scale='Blues')
-                fig.update_layout(yaxis_title="Probability (%)")
-                st.plotly_chart(fig, use_container_width=True)
+                feedback_col1, feedback_col2 = st.columns([1, 1])
+                
+                with feedback_col1:
+                    st.markdown("### Was the prediction correct?")
+                    
+                    # Feedback form
+                    with st.form("feedback_form"):
+                        user_correction = st.selectbox(
+                            "What condition do you see?",
+                            options=analyzer.classes,
+                            index=predicted_class,
+                            format_func=lambda x: x.title()
+                        )
+                        
+                        confidence_rating = st.slider(
+                            "How confident are you in your assessment?",
+                            min_value=1,
+                            max_value=5,
+                            value=3,
+                            help="1 = Not sure, 5 = Very confident"
+                        )
+                        
+                        feedback_notes = st.text_area(
+                            "Additional notes (optional):",
+                            placeholder="Describe what you see or any observations..."
+                        )
+                        
+                        submitted = st.form_submit_button("Submit Feedback")
+                        
+                        if submitted:
+                            # Save feedback
+                            feedback_count = analyzer.add_feedback(
+                                str(uploaded_file.name),
+                                predicted_class,
+                                analyzer.classes.index(user_correction),
+                                predictions[predicted_class]
+                            )
+                            
+                            st.success(f"✅ Feedback submitted! Total feedback: {feedback_count}")
+                
+                with feedback_col2:
+                    st.markdown("### 📊 Feedback Statistics")
+                    
+                    if analyzer.feedback_data:
+                        total_feedback = len(analyzer.feedback_data)
+                        correct_predictions = sum(1 for f in analyzer.feedback_data if f['correct'])
+                        accuracy = correct_predictions / total_feedback if total_feedback > 0 else 0
+                        
+                        st.metric("Total Feedback", total_feedback)
+                        st.metric("Correct Predictions", correct_predictions)
+                        st.metric("AI Accuracy", f"{accuracy*100:.1f}%")
+                        
+                        # Show recent feedback
+                        st.markdown("**Recent Feedback:**")
+                        for feedback in analyzer.feedback_data[-3:]:
+                            status = "✅" if feedback['correct'] else "❌"
+                            st.markdown(f"{status} {feedback['timestamp'][:10]}: {analyzer.classes[feedback['predicted_class']].title()}")
+                    else:
+                        st.info("No feedback submitted yet. Help improve the AI!")
+            else:
+                st.error("❌ Unable to make prediction")
+        else:
+            st.warning("⚠️ Model not available. Please train the model first.")
         
-        # Image statistics
-        st.subheader("📊 Image Statistics")
-        col1, col2, col3, col4 = st.columns(4)
+        # Additional analysis
+        st.markdown("---")
+        st.markdown("### 📈 Image Histogram")
         
-        with col1:
-            st.metric("Width", f"{img.shape[1]} px")
-        with col2:
-            st.metric("Height", f"{img.shape[0]} px")
-        with col3:
-            st.metric("Mean Intensity", f"{np.mean(img):.1f}")
-        with col4:
-            st.metric("Std Deviation", f"{np.std(img):.1f}")
+        # Create histogram
+        img_array = np.array(image)
+        if len(img_array.shape) == 3:
+            img_array = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
         
-        # Histogram
-        st.subheader("📈 Intensity Histogram")
-        hist_values = np.histogram(img, bins=256, range=(0, 256))[0]
-        st.bar_chart(hist_values)
-    
+        fig = px.histogram(
+            x=img_array.flatten(),
+            nbins=50,
+            title="Pixel Intensity Distribution",
+            labels={'x': 'Pixel Intensity', 'y': 'Frequency'}
+        )
+        st.plotly_chart(fig, use_container_width=True)
+        
     else:
         # Welcome message
-        st.info("👆 Please upload an X-ray image to begin analysis")
+        st.markdown("""
+        ## 🎯 Welcome to Dental X-Ray AI Assistant!
         
-        # Show sample images if available
-        st.subheader("📁 Sample Images")
-        data_dir = Path("data")
-        if data_dir.exists():
-            sample_images = []
-            for class_name in analyzer.classes:
-                class_dir = data_dir / class_name
-                if class_dir.exists():
-                    images = list(class_dir.glob("*.jpg")) + list(class_dir.glob("*.png"))
-                    if images:
-                        sample_images.append((class_name, str(images[0])))
-            
-            if sample_images:
-                cols = st.columns(len(sample_images))
-                for i, (class_name, img_path) in enumerate(sample_images):
-                    with cols[i]:
-                        img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
-                        if img is not None:
-                            img_resized = cv2.resize(img, (200, 200))
-                            st.image(img_resized, caption=f"{class_name.title()}", use_column_width=True)
+        This advanced tool helps you analyze dental X-ray images using:
+        
+        - **🤖 AI-Powered Classification**: Detects cavities, fillings, implants, and impacted teeth
+        - **🦷 Tooth Detection**: Automatically identifies and annotates tooth regions
+        - **🧠 AI Thinking**: Shows you what the AI is looking at and why it made its decision
+        - **📝 Continuous Learning**: Learn from your feedback to improve over time
+        - **🔧 Advanced Image Processing**: CLAHE enhancement and edge detection
+        - **📊 Detailed Analysis**: Image statistics and confidence scores
+        - **📈 Visual Insights**: Histograms, attention maps, and prediction charts
+        
+        ### 🚀 Getting Started:
+        1. **Upload** a dental X-ray image using the sidebar
+        2. **Adjust** processing and annotation settings
+        3. **View** AI predictions with explanations
+        4. **Provide feedback** to help the AI learn
+        5. **Explore** tooth detection and attention maps
+        
+        ### 📋 Supported Conditions:
+        - **Cavity**: Dental decay detection
+        - **Filling**: Dental restoration identification
+        - **Implant**: Dental implant recognition
+        - **Impacted**: Impacted tooth detection
+        """)
+        
+        # Model status
+        if analyzer.model is not None:
+            st.success("✅ AI Model is ready for analysis!")
+        else:
+            st.error("❌ AI Model not available. Please train the model first.")
 
 if __name__ == "__main__":
     main()

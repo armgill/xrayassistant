@@ -2,47 +2,71 @@ import os
 import cv2
 import numpy as np
 import tensorflow as tf
-from tensorflow.keras import layers, models
+from tensorflow.keras.applications import DenseNet201
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import Input, Dense, Dropout, GlobalAveragePooling2D
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report, confusion_matrix
 import matplotlib.pyplot as plt
 import seaborn as sns
 from pathlib import Path
+import warnings
+warnings.filterwarnings('ignore')
 
 # Configuration
-DATA_DIR = "data"  # Using full dataset for best results
+DATA_DIR = "data"
 IMG_SIZE = (256, 256)
-CLASSES = ["cavity", "filling", "implant", "impacted"]  # Updated classes from our dataset
+CLASSES = ["cavity", "filling", "implant", "impacted"]
 BATCH_SIZE = 32
-EPOCHS = 25  # Reduced for faster training while maintaining quality
+EPOCHS = 60
 VALIDATION_SPLIT = 0.2
+SEED = 42
 
-def preprocess_image(path):
-    """Preprocess a single image"""
+def advanced_preprocess_image(path):
+    """Advanced image preprocessing with background segmentation and CLAHE"""
+    # Read image
     img = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
     if img is None:
         raise ValueError(f"Could not load image: {path}")
     
-    # Apply CLAHE for enhancement
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    img = clahe.apply(img)
+    # Background segmentation to reduce white pixels
+    img2 = img - 255
+    kernel = np.ones((2, 2))
+    kernel2 = np.ones((3, 3))
+    
+    # Dilate to create mask
+    dilated_mask = cv2.dilate(img2, kernel, iterations=3)
+    ret, thresh = cv2.threshold(dilated_mask, 0, 255, cv2.THRESH_BINARY)
+    dilated_mask2 = cv2.dilate(thresh, kernel2, iterations=3)
+    
+    # Apply mask to original image
+    img = img / 255.0
+    res_img = dilated_mask2 * img
+    res_img = np.uint8(res_img)
+    
+    # Apply CLAHE with higher clip limit
+    clahe_op = cv2.createCLAHE(clipLimit=20)
+    final_img = clahe_op.apply(res_img)
     
     # Resize
-    img = cv2.resize(img, IMG_SIZE)
+    final_img = cv2.resize(final_img, IMG_SIZE)
+    
+    # Convert to RGB (DenseNet expects 3 channels)
+    final_img = cv2.cvtColor(final_img, cv2.COLOR_GRAY2RGB)
     
     # Normalize
-    img = img / 255.0
+    final_img = final_img / 255.0
     
-    return img
+    return final_img
 
 def load_dataset():
-    """Load and preprocess the entire dataset"""
+    """Load and preprocess the entire dataset with advanced preprocessing"""
     data = []
     labels = []
     file_paths = []
     
-    print("Loading dataset...")
+    print("Loading dataset with advanced preprocessing...")
     for label, class_name in enumerate(CLASSES):
         class_dir = Path(DATA_DIR) / class_name
         if not class_dir.exists():
@@ -52,7 +76,7 @@ def load_dataset():
         print(f"Loading {class_name} images...")
         for file in class_dir.glob("*.jpg"):
             try:
-                img = preprocess_image(str(file))
+                img = advanced_preprocess_image(str(file))
                 data.append(img)
                 labels.append(label)
                 file_paths.append(str(file))
@@ -61,7 +85,7 @@ def load_dataset():
         
         for file in class_dir.glob("*.png"):
             try:
-                img = preprocess_image(str(file))
+                img = advanced_preprocess_image(str(file))
                 data.append(img)
                 labels.append(label)
                 file_paths.append(str(file))
@@ -72,8 +96,8 @@ def load_dataset():
     return np.array(data), np.array(labels), file_paths
 
 def create_data_generators():
-    """Create data generators with augmentation"""
-    # Data augmentation for training
+    """Create data generators with advanced augmentation"""
+    # Advanced data augmentation for training
     train_datagen = ImageDataGenerator(
         rotation_range=20,
         width_shift_range=0.2,
@@ -81,6 +105,7 @@ def create_data_generators():
         shear_range=0.2,
         zoom_range=0.2,
         horizontal_flip=True,
+        vertical_flip=False,
         fill_mode='nearest',
         rescale=1./255
     )
@@ -90,78 +115,60 @@ def create_data_generators():
     
     return train_datagen, val_datagen
 
-def build_improved_model():
-    """Build an improved CNN model"""
-    model = models.Sequential([
-        # Input layer
-        layers.Input(shape=(IMG_SIZE[0], IMG_SIZE[1], 1)),
-        
-        # First convolutional block
-        layers.Conv2D(32, (3, 3), activation='relu', padding='same'),
-        layers.BatchNormalization(),
-        layers.Conv2D(32, (3, 3), activation='relu', padding='same'),
-        layers.BatchNormalization(),
-        layers.MaxPooling2D((2, 2)),
-        layers.Dropout(0.25),
-        
-        # Second convolutional block
-        layers.Conv2D(64, (3, 3), activation='relu', padding='same'),
-        layers.BatchNormalization(),
-        layers.Conv2D(64, (3, 3), activation='relu', padding='same'),
-        layers.BatchNormalization(),
-        layers.MaxPooling2D((2, 2)),
-        layers.Dropout(0.25),
-        
-        # Third convolutional block
-        layers.Conv2D(128, (3, 3), activation='relu', padding='same'),
-        layers.BatchNormalization(),
-        layers.Conv2D(128, (3, 3), activation='relu', padding='same'),
-        layers.BatchNormalization(),
-        layers.MaxPooling2D((2, 2)),
-        layers.Dropout(0.25),
-        
-        # Fourth convolutional block
-        layers.Conv2D(256, (3, 3), activation='relu', padding='same'),
-        layers.BatchNormalization(),
-        layers.Conv2D(256, (3, 3), activation='relu', padding='same'),
-        layers.BatchNormalization(),
-        layers.MaxPooling2D((2, 2)),
-        layers.Dropout(0.25),
-        
-        # Flatten and dense layers
-        layers.Flatten(),
-        layers.Dense(512, activation='relu'),
-        layers.BatchNormalization(),
-        layers.Dropout(0.5),
-        layers.Dense(256, activation='relu'),
-        layers.BatchNormalization(),
-        layers.Dropout(0.5),
-        layers.Dense(len(CLASSES), activation='softmax')
-    ])
+def build_densenet_model():
+    """Build DenseNet201-based model with transfer learning"""
+    # Load pre-trained DenseNet201
+    base_model = DenseNet201(
+        weights='imagenet',
+        include_top=False,
+        input_shape=(IMG_SIZE[0], IMG_SIZE[1], 3)
+    )
+    
+    # Make base model trainable
+    base_model.trainable = True
+    
+    # Create model
+    inputs = Input(shape=(IMG_SIZE[0], IMG_SIZE[1], 3))
+    x = base_model(inputs)
+    x = GlobalAveragePooling2D()(x)
+    
+    # Dense layers with ELU activation (as in Kaggle notebook)
+    x = Dense(256, activation='elu')(x)
+    x = Dropout(0.3)(x)
+    
+    x = Dense(128, activation='elu')(x)
+    x = Dropout(0.2)(x)
+    
+    x = Dense(32, activation='elu')(x)
+    
+    # Output layer
+    outputs = Dense(len(CLASSES), activation='softmax')(x)
+    
+    model = Model(inputs=inputs, outputs=outputs)
     
     return model
 
 def plot_training_history(history):
     """Plot training history"""
-    fig, axes = plt.subplots(1, 2, figsize=(15, 5))
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 5))
     
-    # Accuracy
-    axes[0].plot(history.history['accuracy'], label='Training Accuracy')
-    axes[0].plot(history.history['val_accuracy'], label='Validation Accuracy')
-    axes[0].set_title('Model Accuracy')
-    axes[0].set_xlabel('Epoch')
-    axes[0].set_ylabel('Accuracy')
-    axes[0].legend()
-    axes[0].grid(True)
+    # Plot loss
+    ax1.plot(history.history['loss'], label='Training Loss')
+    ax1.plot(history.history['val_loss'], label='Validation Loss')
+    ax1.set_title('Model Loss')
+    ax1.set_xlabel('Epoch')
+    ax1.set_ylabel('Loss')
+    ax1.legend()
+    ax1.grid(True)
     
-    # Loss
-    axes[1].plot(history.history['loss'], label='Training Loss')
-    axes[1].plot(history.history['val_loss'], label='Validation Loss')
-    axes[1].set_title('Model Loss')
-    axes[1].set_xlabel('Epoch')
-    axes[1].set_ylabel('Loss')
-    axes[1].legend()
-    axes[1].grid(True)
+    # Plot accuracy
+    ax2.plot(history.history['accuracy'], label='Training Accuracy')
+    ax2.plot(history.history['val_accuracy'], label='Validation Accuracy')
+    ax2.set_title('Model Accuracy')
+    ax2.set_xlabel('Epoch')
+    ax2.set_ylabel('Accuracy')
+    ax2.legend()
+    ax2.grid(True)
     
     plt.tight_layout()
     plt.savefig('training_history.png', dpi=300, bbox_inches='tight')
@@ -182,82 +189,77 @@ def plot_confusion_matrix(y_true, y_pred, class_names):
     plt.show()
 
 def evaluate_model(model, X_test, y_test):
-    """Evaluate the model and print detailed metrics"""
-    # Predict
+    """Evaluate model and print detailed metrics"""
+    # Predictions
     y_pred = model.predict(X_test)
     y_pred_classes = np.argmax(y_pred, axis=1)
-    y_test_classes = np.argmax(y_test, axis=1)
     
     # Print classification report
     print("\n" + "="*50)
     print("CLASSIFICATION REPORT")
     print("="*50)
-    print(classification_report(y_test_classes, y_pred_classes, 
-                               target_names=CLASSES))
+    print(classification_report(y_test, y_pred_classes, target_names=CLASSES))
     
     # Plot confusion matrix
-    plot_confusion_matrix(y_test_classes, y_pred_classes, CLASSES)
+    plot_confusion_matrix(y_test, y_pred_classes, CLASSES)
     
-    # Calculate and print per-class accuracy
-    print("\n" + "="*50)
-    print("PER-CLASS ACCURACY")
-    print("="*50)
-    for i, class_name in enumerate(CLASSES):
-        class_mask = y_test_classes == i
-        class_accuracy = np.mean(y_pred_classes[class_mask] == i)
-        print(f"{class_name:15s}: {class_accuracy:.3f}")
+    return y_pred_classes
 
 def main():
     """Main training function"""
-    print("🦷 Dental X-Ray Classification Model Training")
-    print("="*50)
+    print("🚀 Starting Advanced Dental X-Ray Classification Training")
+    print("="*60)
+    
+    # Set random seeds
+    np.random.seed(SEED)
+    tf.random.set_seed(SEED)
     
     # Load dataset
     X, y, file_paths = load_dataset()
     
     if len(X) == 0:
-        print("No images found! Please check your data directory.")
+        print("❌ No images found! Please check your data directory.")
         return
     
-    # Reshape for CNN (add channel dimension)
-    X = np.expand_dims(X, axis=-1)
+    print(f"📊 Dataset loaded: {len(X)} images, {len(CLASSES)} classes")
     
-    # Convert labels to categorical
-    y = tf.keras.utils.to_categorical(y, num_classes=len(CLASSES))
-    
-    # Split dataset
+    # Split data
     X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=VALIDATION_SPLIT, random_state=42, stratify=y
+        X, y, test_size=VALIDATION_SPLIT, random_state=SEED, stratify=y
     )
     
-    print(f"Training set: {X_train.shape[0]} images")
-    print(f"Test set: {X_test.shape[0]} images")
+    print(f"📈 Training samples: {len(X_train)}")
+    print(f"🧪 Test samples: {len(X_test)}")
     
-    # Create model
-    model = build_improved_model()
+    # Create data generators
+    train_datagen, val_datagen = create_data_generators()
+    
+    # Build model
+    print("🏗️ Building DenseNet201 model...")
+    model = build_densenet_model()
     
     # Compile model
     model.compile(
         optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
-        loss='categorical_crossentropy',
+        loss='sparse_categorical_crossentropy',
         metrics=['accuracy']
     )
     
-    # Print model summary
-    print("\nModel Architecture:")
+    print(f"📋 Model summary:")
     model.summary()
     
-    # Create callbacks
+    # Callbacks
     callbacks = [
         tf.keras.callbacks.EarlyStopping(
             monitor='val_loss',
-            patience=10,
+            min_delta=0.0001,
+            patience=40,
             restore_best_weights=True
         ),
         tf.keras.callbacks.ReduceLROnPlateau(
             monitor='val_loss',
-            factor=0.5,
-            patience=5,
+            factor=0.1,
+            patience=15,
             min_lr=1e-7
         ),
         tf.keras.callbacks.ModelCheckpoint(
@@ -269,44 +271,52 @@ def main():
     ]
     
     # Train model
-    print("\nStarting training...")
+    print("🎯 Starting training...")
+    print(f"⏱️ Training for {EPOCHS} epochs with early stopping")
+    
     history = model.fit(
-        X_train, y_train,
-        batch_size=BATCH_SIZE,
+        train_datagen.flow(X_train, y_train, batch_size=BATCH_SIZE),
         epochs=EPOCHS,
         validation_data=(X_test, y_test),
         callbacks=callbacks,
         verbose=1
     )
     
-    # Plot training history
-    plot_training_history(history)
-    
-    # Evaluate model
-    print("\nEvaluating model...")
-    evaluate_model(model, X_test, y_test)
-    
     # Save final model
-    os.makedirs('models', exist_ok=True)
     model.save('models/dental_model.h5')
-    print("\n✅ Model saved as 'models/dental_model.h5'")
     
     # Save model info
     model_info = {
         'classes': CLASSES,
-        'img_size': IMG_SIZE,
+        'img_size': list(IMG_SIZE),
         'total_samples': len(X),
         'training_samples': len(X_train),
         'test_samples': len(X_test),
-        'final_accuracy': history.history['accuracy'][-1],
-        'final_val_accuracy': history.history['val_accuracy'][-1]
+        'final_accuracy': float(history.history['accuracy'][-1]),
+        'final_val_accuracy': float(history.history['val_accuracy'][-1])
     }
     
     import json
     with open('models/model_info.json', 'w') as f:
         json.dump(model_info, f, indent=2)
     
-    print("✅ Model info saved as 'models/model_info.json'")
+    # Plot training history
+    plot_training_history(history)
+    
+    # Evaluate model
+    print("\n🔍 Evaluating model...")
+    y_pred_classes = evaluate_model(model, X_test, y_test)
+    
+    # Print final results
+    print("\n" + "="*50)
+    print("🎉 TRAINING COMPLETE!")
+    print("="*50)
+    print(f"📊 Final Training Accuracy: {history.history['accuracy'][-1]:.4f}")
+    print(f"📊 Final Validation Accuracy: {history.history['val_accuracy'][-1]:.4f}")
+    print(f"💾 Models saved to: models/")
+    print(f"📈 Training plots saved to: training_history.png, confusion_matrix.png")
+    
+    return model, history
 
 if __name__ == "__main__":
     main()
