@@ -256,7 +256,6 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 - TensorFlow/Keras for deep learning framework
 - Streamlit for web application framework
 - Roboflow for dataset format and organization
-- The dental imaging community for inspiration
 
 ## Support
 
@@ -267,5 +266,4 @@ For questions, issues, or contributions, please:
 
 ---
 
-**Note**: This tool is for educational and research purposes. Always consult with qualified dental professionals for actual medical diagnosis.
 **Note**: This tool is for educational and research purposes. Always consult with qualified dental professionals for actual medical diagnosis.
